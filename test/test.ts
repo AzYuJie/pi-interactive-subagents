@@ -1065,6 +1065,68 @@ describe("status.ts", () => {
   });
 });
 
+describe("model and thinking resolution", () => {
+  const testApi = (subagentsModule as any).__test__;
+
+  it("splits a known thinking suffix and leaves provider paths alone", () => {
+    assert.deepEqual(testApi.splitThinkingSuffix("zhipu/glm-5.3:high"), {
+      base: "zhipu/glm-5.3",
+      thinking: "high",
+    });
+    assert.deepEqual(testApi.splitThinkingSuffix("openrouter/z-ai/glm-5.2:medium"), {
+      base: "openrouter/z-ai/glm-5.2",
+      thinking: "medium",
+    });
+    assert.deepEqual(testApi.splitThinkingSuffix("zhipu/glm-5.3"), { base: "zhipu/glm-5.3" });
+    assert.deepEqual(testApi.splitThinkingSuffix("ollama/qwen:latest"), { base: "ollama/qwen:latest" });
+  });
+
+  it("prefers the thinking parameter, then a model suffix, then the card", () => {
+    const card = { model: "zhipu/glm-5.3", thinking: "low" };
+    assert.deepEqual(testApi.resolveModelThinking(undefined, undefined, card), {
+      model: "zhipu/glm-5.3",
+      thinking: "low",
+    });
+    assert.deepEqual(testApi.resolveModelThinking("deepseek/deepseek-flash:high", undefined, card), {
+      model: "deepseek/deepseek-flash",
+      thinking: "high",
+    });
+    assert.deepEqual(testApi.resolveModelThinking("deepseek/deepseek-flash:high", "medium", card), {
+      model: "deepseek/deepseek-flash",
+      thinking: "medium",
+    });
+    assert.deepEqual(testApi.resolveModelThinking(undefined, "high", null), {
+      model: undefined,
+      thinking: "high",
+    });
+  });
+
+  it("applies exactly one thinking suffix when the loadout model carries one", () => {
+    withTempDir((d) => {
+      const parts: string[] = [];
+      testApi.applySandboxToParts(
+        parts,
+        {
+          agent: "worker",
+          toolAllowlist: "read",
+          model: "zhipu/glm-5.3:medium",
+          thinking: "high",
+          systemPromptMode: "append",
+          identity: null,
+          spawnable: [],
+          autoExit: true,
+          cwd: null,
+          agentDir: null,
+        },
+        { artifactDir: d, name: "worker" },
+      );
+      const modelIdx = parts.indexOf("--model");
+      assert.ok(parts[modelIdx + 1].includes("zhipu/glm-5.3:high"), "expected a single resolved suffix");
+      assert.ok(!parts[modelIdx + 1].includes(":medium"), "expected the stale suffix to be dropped");
+    });
+  });
+});
+
 describe("subagent discovery", () => {
   const testApi = (subagentsModule as any).__test__;
 
@@ -1850,7 +1912,7 @@ describe("tool registration", () => {
     assert.match(result.content[0].text, /not a known agent/i);
   });
 
-  it("exposes a debloated schema: agent+task required, name/model/cwd optional, no override knobs", () => {
+  it("exposes a debloated schema: agent+task required, name/model/thinking/cwd optional, no override knobs", () => {
     const { api, registeredTools } = createMockExtensionApi();
     (subagentsModule as any).default(api);
 
@@ -1860,8 +1922,8 @@ describe("tool registration", () => {
     const props = subagentTool.parameters.properties;
     assert.deepEqual(
       Object.keys(props).sort(),
-      ["agent", "cwd", "model", "name", "task"],
-      "only agent/task/name/model/cwd should remain",
+      ["agent", "cwd", "model", "name", "task", "thinking"],
+      "only agent/task/name/model/thinking/cwd should remain",
     );
     assert.deepEqual(
       [...(subagentTool.parameters.required ?? [])].sort(),

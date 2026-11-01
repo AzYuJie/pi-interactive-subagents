@@ -106,6 +106,13 @@ const SubagentParams = Type.Object({
     }),
   ),
   model: Type.Optional(Type.String({ description: "Model override (overrides agent default)" })),
+  thinking: Type.Optional(
+    Type.String({
+      description:
+        "Thinking level override for this spawn ('minimal', 'low', 'medium', 'high', ...). " +
+        "Overrides the agent card's thinking; an explicit value also beats a `:level` suffix on `model`.",
+    }),
+  ),
   cwd: Type.Optional(
     Type.String({
       description:
@@ -832,13 +839,51 @@ function buildSubagentToolAllowlist(
  * PI_SUBAGENT_ALLOWED / PI_CODING_AGENT_DIR) and cwd are the caller's
  * responsibility since they differ slightly between launch and resume.
  */
+/**
+ * Thinking levels pi accepts as a trailing `:level` suffix on a model id.
+ */
+const THINKING_SUFFIX_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+/**
+ * Split a trailing `:thinking` suffix off a model id. Providers keep colons in
+ * their paths, so only a known thinking level counts as a suffix.
+ */
+function splitThinkingSuffix(model: string): { base: string; thinking?: string } {
+  const sep = model.lastIndexOf(":");
+  if (sep > 0) {
+    const suffix = model.slice(sep + 1).toLowerCase();
+    if (THINKING_SUFFIX_LEVELS.has(suffix)) return { base: model.slice(0, sep), thinking: suffix };
+  }
+  return { base: model };
+}
+
+/**
+ * Resolve model and thinking for a spawn. Precedence: the `thinking` parameter,
+ * then a `:level` suffix on the `model` parameter, then the agent card. The
+ * returned model never carries a thinking suffix, so callers re-apply the level
+ * exactly once.
+ */
+function resolveModelThinking(
+  modelParam: string | undefined,
+  thinkingParam: string | undefined,
+  agentDefs: Pick<AgentDefaults, "model" | "thinking"> | null,
+): { model?: string; thinking?: string } {
+  const override = modelParam ? splitThinkingSuffix(modelParam) : undefined;
+  const fallback = agentDefs?.model ? splitThinkingSuffix(agentDefs.model) : undefined;
+  return {
+    model: override ? override.base : fallback?.base,
+    thinking: thinkingParam ?? override?.thinking ?? fallback?.thinking ?? agentDefs?.thinking,
+  };
+}
+
 function applySandboxToParts(
   parts: string[],
   loadout: SubagentLoadout,
   opts: { artifactDir: string; name: string },
 ): void {
   if (loadout.model) {
-    const model = loadout.thinking ? `${loadout.model}:${loadout.thinking}` : loadout.model;
+    const { base } = splitThinkingSuffix(loadout.model);
+    const model = loadout.thinking ? `${base}:${loadout.thinking}` : base;
     parts.push("--model", shellEscape(model));
   }
 
@@ -1130,6 +1175,8 @@ export const __test__ = {
   resolveEffectiveInteractive,
   buildSubagentToolAllowlist,
   applySandboxToParts,
+  splitThinkingSuffix,
+  resolveModelThinking,
   buildPiPromptArgs,
   formatWidgetRightLabel,
   observeRunningSubagent,
@@ -1174,10 +1221,13 @@ async function launchSubagent(
   const id = Math.random().toString(16).slice(2, 10);
 
   const agentDefs = params.agent ? loadAgentDefaults(params.agent) : null;
-  const effectiveModel = params.model ?? agentDefs?.model;
+  const { model: effectiveModel, thinking: effectiveThinking } = resolveModelThinking(
+    params.model,
+    params.thinking,
+    agentDefs,
+  );
   const effectiveTools = agentDefs?.tools;
   const effectiveSkills = agentDefs?.skills;
-  const effectiveThinking = agentDefs?.thinking;
   const effectiveInteractive = resolveEffectiveInteractive(params, agentDefs);
 
   const sessionFile = ctx.sessionManager.getSessionFile();

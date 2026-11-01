@@ -40,8 +40,10 @@ There is also a `/subagent <agent> <task>` command for spawning directly.
 
 ```typescript
 subagent({ agent: "scout", task: "Analyze the auth module" });
-subagent({ agent: "worker", name: "dark-mode", task: "Implement the dark mode toggle" });
+subagent({ agent: "worker", name: "dark-mode", task: "Implement the dark mode toggle", thinking: "high" });
 ```
+
+**Model and thinking are overridable per spawn.** `model` replaces the card's model, `thinking` replaces the card's level. A `:level` suffix on `model` (`zhipu/glm-5.3:high`) also works, and an explicit `thinking` parameter beats the suffix. The resolved pair is snapshotted into the loadout, so `subagent_message` resumes the same pair.
 
 | Parameter | Type | Default | Description |
 | --------- | ---- | ------- | ----------- |
@@ -49,6 +51,7 @@ subagent({ agent: "worker", name: "dark-mode", task: "Implement the dark mode to
 | `task` | string | required | Task prompt |
 | `name` | string | agent name | Display name for the pane and widget. Must be unique — duplicates are auto-suffixed (`scout`, `scout-2`, …) |
 | `model` | string | agent's model | Override the model for this spawn |
+| `thinking` | string | agent's `thinking` | Override the thinking level for this spawn (`minimal`, `low`, `medium`, `high`) |
 | `cwd` | string | agent's `cwd` | Working directory (see [Role folders](#role-folders)) |
 
 ### Messaging
@@ -107,7 +110,7 @@ You are a specialized agent that does X...
 | `name` | string | Agent name (used in `agent: "my-agent"`) |
 | `description` | string | Shown in `subagents_list` |
 | `model` | string | Default model |
-| `thinking` | string | `minimal`, `low`, `medium`, or `high` |
+| `thinking` | string | `minimal`, `low`, `medium`, or `high`. Overridable per spawn through the tool's `thinking` parameter |
 | `tools` | string | Strict tool allowlist. Built-ins: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`. Extension-backed: `web_search`, `web_fetch`, `safe_bash`, `video_extract`, `youtube_search`, `google_image_search`. Only the extensions backing the listed tools are loaded into the child |
 | `subagent_agents` | string | Comma-separated agent names this agent may spawn. **Presence of this field grants the spawning toolset** (`subagent`, `subagent_message`, `subagents_list`) and restricts spawn targets to the list. Omit it and the agent cannot spawn at all |
 | `skills` | string | Comma-separated skill names to auto-load |
