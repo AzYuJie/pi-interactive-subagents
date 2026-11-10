@@ -32,6 +32,17 @@ import {
 
 import { shellEscape } from "../pi-extension/subagents/tmux.ts";
 import {
+  planTabGrid,
+  planInsert,
+  PARENT_PANE_MIN_WIDTH,
+  __herdrGridTest__,
+  type GridPlan,
+  type InsertPlan,
+  type PaneSize,
+  type TabGrid,
+  type TabLayout,
+} from "../pi-extension/subagents/herdr.ts";
+import {
   advanceStatusState,
   capStatusLines,
   classifyStatus,
@@ -2735,6 +2746,256 @@ describe("tmux.ts", () => {
       assert.ok(escaped.endsWith("'"));
       // Inside single quotes, everything is literal
       assert.ok(escaped.includes("$world"));
+    });
+  });
+});
+
+describe("herdr.ts layout planning", () => {
+  const area: PaneSize = { width: 199, height: 47 };
+
+  function size(width: number, height: number): PaneSize {
+    return { width, height };
+  }
+
+  /** planInsert over a fixed set of pane sizes; unknown panes read as gone. */
+  function plan(
+    slots: (string | null)[][],
+    sizes: Record<string, PaneSize>,
+    options?: { anchorIsParent?: boolean; plan?: GridPlan; area?: PaneSize },
+  ): InsertPlan {
+    const tabArea = options?.area ?? area;
+    return planInsert({
+      slots,
+      anchorIsParent: options?.anchorIsParent ?? true,
+      plan: options?.plan ?? planTabGrid(tabArea.width),
+      area: tabArea,
+      measure: (paneId) => sizes[paneId] ?? null,
+    });
+  }
+
+  describe("planTabGrid", () => {
+    it("keeps the parent readable and sizes columns by the minimum width", () => {
+      const grid = planTabGrid(199);
+      assert.equal(grid.parentWidth, 90);
+      assert.equal(grid.maxCols, 4);
+      assert.equal(grid.maxRows, 2);
+      assert.ok(grid.parentWidth >= PARENT_PANE_MIN_WIDTH);
+    });
+
+    it("drops to one subagent column on a narrow tab", () => {
+      assert.equal(planTabGrid(120).maxCols, 2);
+      assert.equal(planTabGrid(120).parentWidth, 76);
+    });
+
+    it("never hands the parent more width than the tab has", () => {
+      const grid = planTabGrid(60);
+      assert.ok(grid.parentWidth < 60);
+      assert.ok(grid.parentWidth >= 1);
+    });
+  });
+
+  describe("planInsert", () => {
+    it("carves the first subagent column off the parent at its planned width", () => {
+      const insert = plan([["p1"]], { p1: size(199, 47) });
+      assert.equal(insert.kind, "column");
+      assert.equal(insert.kind === "column" && insert.targetPaneId, "p1");
+      assert.equal(insert.kind === "column" && insert.newCol, 1);
+      assert.ok(insert.kind === "column" && Math.abs(insert.ratio - 90 / 199) < 1e-9);
+    });
+
+    it("halves the rightmost column while both halves stay readable", () => {
+      const insert = plan([["p1"], ["p2"]], { p1: size(90, 47), p2: size(109, 47) });
+      assert.equal(insert.kind, "column");
+      assert.equal(insert.kind === "column" && insert.targetPaneId, "p2");
+      assert.equal(insert.kind === "column" && insert.ratio, 0.5);
+    });
+
+    it("stacks a row instead of a column that would fall below the minimum", () => {
+      const insert = plan([["p1"], ["p2"], ["p3"]], {
+        p1: size(90, 47),
+        p2: size(55, 47),
+        p3: size(54, 47),
+      });
+      assert.equal(insert.kind, "row");
+      assert.equal(insert.kind === "row" && insert.targetPaneId, "p2");
+      assert.equal(insert.kind === "row" && insert.ratio, 0.5);
+    });
+
+    it("leaves the parent column single-row, then reports full", () => {
+      const sizes = {
+        p1: size(90, 47),
+        p2: size(55, 24),
+        p3: size(54, 47),
+        p4: size(55, 23),
+      };
+      const partial = plan([["p1"], ["p2", "p4"], ["p3"]], sizes);
+      assert.equal(partial.kind, "row");
+      assert.equal(partial.kind === "row" && partial.targetPaneId, "p3");
+
+      const full = plan([["p1"], ["p2", "p4"], ["p3", "p5"]], {
+        ...sizes,
+        p5: size(54, 23),
+      });
+      assert.equal(full.kind, "full");
+    });
+
+    it("fills the anchor column of an overflow tab with rows", () => {
+      const insert = plan([["a"], ["b"], ["c"]], {
+        a: size(100, 47),
+        b: size(50, 47),
+        c: size(49, 47),
+      }, { anchorIsParent: false });
+      assert.equal(insert.kind, "row");
+      assert.equal(insert.kind === "row" && insert.targetPaneId, "a");
+    });
+
+    it("waits for rows when the rightmost column is not single-height", () => {
+      const insert = plan([["p1"], ["p2", "p3"]], {
+        p1: size(90, 47),
+        p2: size(109, 24),
+        p3: size(109, 23),
+      });
+      // p2/p3 own a full column split; adding a column would carve both of
+      // them, so the grid keeps its shape and reports no free column slot.
+      assert.notEqual(insert.kind, "column");
+    });
+
+    it("ignores panes that are no longer on screen", () => {
+      const insert = plan([["p1"], [null], ["p3"]], { p1: size(90, 47), p3: size(54, 47) });
+      assert.equal(insert.kind, "row");
+      assert.equal(insert.kind === "row" && insert.targetPaneId, "p3");
+    });
+
+    it("refuses rows that would fall below the readable height", () => {
+      const insert = plan(
+        [["p1"], ["p2"]],
+        { p1: size(90, 20), p2: size(60, 20) },
+        { area: { width: 199, height: 20 } },
+      );
+      assert.equal(insert.kind, "full");
+    });
+
+    it("measures the parent pane itself when the user narrowed it by hand", () => {
+      // The tab is 199 wide but the parent only owns 120: keeping 90 leaves a
+      // readable 30-column subagent pane, so the split still happens.
+      const insert = plan([["p1"]], { p1: size(120, 47) });
+      assert.equal(insert.kind, "column");
+      assert.equal(insert.kind === "column" && insert.ratio, 86 / 120);
+
+      // A 60-column parent cannot give up 34+ columns without collapsing.
+      assert.equal(plan([["p1"]], { p1: size(60, 47) }).kind, "full");
+    });
+  });
+
+  describe("tab grid bookkeeping", () => {
+    const rect = (x: number, y: number, width: number, height: number) => ({ x, y, width, height });
+
+    function layout(
+      tabId: string,
+      panes: Array<[string, number, number, number, number]>,
+    ): TabLayout {
+      return {
+        tabId,
+        workspaceId: "w1",
+        zoomed: false,
+        area: rect(0, 0, 199, 47),
+        panes: panes.map(([paneId, x, y, width, height]) => ({
+          pane_id: paneId,
+          rect: rect(x, y, width, height),
+        })),
+      };
+    }
+
+    function grid(tabId: string, anchor: string, slots: (string | null)[][]): TabGrid {
+      return {
+        tabId,
+        anchorPaneId: anchor,
+        anchorIsParent: false,
+        slots,
+        plan: planTabGrid(199),
+        degraded: false,
+      };
+    }
+
+    it("rebuilds columns from the screen, top to bottom", () => {
+      __herdrGridTest__.reset();
+      const screen = layout("t1", [
+        ["p3", 145, 24, 54, 23],
+        ["p1", 0, 0, 90, 47],
+        ["p2", 90, 0, 55, 24],
+        ["p4", 90, 24, 55, 23],
+      ]);
+      assert.deepEqual(__herdrGridTest__.slotsFromLayout(screen), [["p1"], ["p2", "p4"], ["p3"]]);
+    });
+
+    it("keeps the tab alive when the anchor is closed and re-keys the survivors", () => {
+      __herdrGridTest__.reset();
+      __herdrGridTest__.seed(grid("t2", "p6", [["p6"], ["p7", "p8"]]));
+
+      __herdrGridTest__.forget("p6", () =>
+        layout("t2", [
+          ["p7", 0, 0, 199, 24],
+          ["p8", 0, 24, 199, 23],
+        ]),
+      );
+
+      const [tab] = __herdrGridTest__.tabs();
+      assert.equal(tab!.anchorPaneId, "p7");
+      assert.equal(tab!.degraded, false);
+      assert.deepEqual(tab!.slots, [["p7", "p8"]]);
+      assert.equal(__herdrGridTest__.ownerOf("p6"), undefined);
+      assert.equal(__herdrGridTest__.ownerOf("p8"), "t2");
+    });
+
+    it("drops the grid when the last pane of a tab is closed", () => {
+      __herdrGridTest__.reset();
+      __herdrGridTest__.seed(grid("t3", "solo", [["solo"]]));
+      __herdrGridTest__.forget("solo", () => null);
+      assert.deepEqual(__herdrGridTest__.tabs(), []);
+    });
+
+    it("rejects a layout payload without a tab id", () => {
+      __herdrGridTest__.reset();
+      assert.throws(
+        () =>
+          __herdrGridTest__.parseLayout({
+            layout: { area: rect(0, 0, 199, 47), panes: [] },
+          }),
+        /tab_id/,
+      );
+    });
+
+    it("reconciles a vanished anchor against the live layout", () => {
+      __herdrGridTest__.reset();
+      __herdrGridTest__.seed(grid("t4", "a", [["a"], ["b", "c"]]));
+
+      const tab = __herdrGridTest__.reconcile(
+        "t4",
+        layout("t4", [
+          ["b", 0, 0, 100, 24],
+          ["c", 0, 24, 100, 23],
+          ["d", 100, 0, 99, 47],
+        ]),
+      );
+      assert.deepEqual(tab!.slots, [["b", "c"], ["d"]]);
+      assert.equal(tab!.anchorPaneId, "b");
+      assert.equal(__herdrGridTest__.ownerOf("a"), undefined);
+      assert.equal(__herdrGridTest__.ownerOf("d"), "t4");
+    });
+
+    it("compacts a column after a middle pane goes away", () => {
+      __herdrGridTest__.reset();
+      __herdrGridTest__.seed(grid("t5", "p1", [["p1"], ["p2", "p3"]]));
+
+      const tab = __herdrGridTest__.reconcile(
+        "t5",
+        layout("t5", [
+          ["p1", 0, 0, 90, 47],
+          ["p3", 90, 0, 109, 47],
+        ]),
+      );
+      assert.deepEqual(tab!.slots, [["p1"], ["p3"]]);
+      assert.equal(__herdrGridTest__.ownerOf("p2"), undefined);
     });
   });
 });
