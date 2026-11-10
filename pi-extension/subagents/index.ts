@@ -2399,6 +2399,25 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     },
   });
 
+  // 子代理消息框统一外框：Box(1,1) 只负责 padding，透明背景，边框套在外面。
+  function frameSubagentBox(
+    theme: { fg(color: string, text: string): string },
+    borderColor: string,
+    body: string[],
+    width: number,
+  ): string[] {
+    const inner = Math.max(2, width - 2);
+    const bc = (s: string) => theme.fg(borderColor, s);
+    const out = [bc(`╭${"─".repeat(inner)}╮`)];
+    for (const line of body) {
+      const w = visibleWidth(line);
+      const padded = w < inner ? line + " ".repeat(inner - w) : truncateToWidth(line, inner);
+      out.push(`${bc("│")}${padded}${bc("│")}`);
+    }
+    out.push(bc(`╰${"─".repeat(inner)}╯`));
+    return out;
+  }
+
   // ── subagent_result message renderer ──
   pi.registerMessageRenderer("subagent_result", (message, options, theme) => {
     const details = message.details as any;
@@ -2411,9 +2430,6 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const errorMessage = typeof details.errorMessage === "string" ? details.errorMessage : "";
         const failed = exitCode !== 0 || !!errorMessage;
         const elapsed = details.elapsed != null ? formatElapsed(details.elapsed) : "?";
-        const bgFn = failed
-          ? (text: string) => theme.bg("toolErrorBg", text)
-          : (text: string) => theme.bg("toolSuccessBg", text);
         const stats = (details.stats ?? null) as SessionStats | null;
         const icon = failed
           ? theme.fg("error", "✗")
@@ -2502,10 +2518,11 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           contentLines.push(theme.fg("muted", keyHint("app.tools.expand", "to expand")));
         }
 
-        // Render via Box for background + padding, with blank line above for separation
-        const box = new Box(1, 1, bgFn);
+        // Render via Box for padding, framed with a rounded transparent border.
+        const box = new Box(1, 1);
         box.addChild(new Text(contentLines.join("\n"), 0, 0));
-        return ["", ...box.render(width)];
+        const body = box.render(Math.max(4, width - 2));
+        return ["", ...frameSubagentBox(theme, failed ? "error" : "success", body, width)];
       },
     };
   });
@@ -2532,9 +2549,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           contentLines.push(theme.fg("muted", keyHint("app.tools.expand", "to expand")));
         }
 
-        const box = new Box(1, 1, (text: string) => theme.bg("customMessageBg", text));
+        const box = new Box(1, 1);
         box.addChild(new Text(contentLines.join("\n"), 0, 0));
-        return ["", ...box.render(width)];
+        const body = box.render(Math.max(4, width - 2));
+        return ["", ...frameSubagentBox(theme, "accent", body, width)];
       },
     };
   });
@@ -2548,7 +2566,6 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       render(width: number): string[] {
         const name = details.name ?? "subagent";
         const agentTag = details.agent ? theme.fg("dim", ` (${details.agent})`) : "";
-        const bgFn = (text: string) => theme.bg("toolSuccessBg", text);
 
         const icon = theme.fg("accent", "?");
         const header = `${icon} ${theme.fg("toolTitle", theme.bold(name))}${agentTag} ${theme.fg("dim", "— asks a question")}`;
@@ -2568,9 +2585,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           contentLines.push(theme.fg("muted", keyHint("app.tools.expand", "to expand")));
         }
 
-        const box = new Box(1, 1, bgFn);
+        const box = new Box(1, 1);
         box.addChild(new Text(contentLines.join("\n"), 0, 0));
-        return ["", ...box.render(width)];
+        const body = box.render(Math.max(4, width - 2));
+        return ["", ...frameSubagentBox(theme, "accent", body, width)];
       },
     };
   });
